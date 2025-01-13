@@ -1,0 +1,618 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.RegularExpressions;
+using System.Windows.Forms;
+
+namespace TokenizerApp
+{
+    public enum TokenType
+    {
+        KEYWORD_IF,
+        KEYWORD_ELSE,
+        KEYWORD_THEN,
+        IDENTIFIER,
+        HEX_NUMBER,
+        DECIMAL_NUMBER,
+        ASSIGNMENT,
+        COMPARISON,
+        SEMICOLON,
+        LEFT_PARENTHESIS,
+        RIGHT_PARENTHESIS,
+        PLUS,
+        MINUS,
+        MULTIPLY,
+        ERROR,
+        UNKNOWN
+    }
+
+    public struct Token
+    {
+        public string Value;
+        public TokenType Type;
+        public int LineNumber;
+
+        public Token(string value, TokenType type, int lineNumber)
+        {
+            Value = value;
+            Type = type;
+            LineNumber = lineNumber;
+        }
+    }
+
+    public partial class Form1 : Form
+    {
+        public Form1()
+        {
+            InitializeComponent();
+            listBoxSyntaxErrors.HorizontalScrollbar = true;
+        }
+
+        private void Form1_Load(object sender, EventArgs e) { }
+
+        private TokenType IdentifyTokenType(string token)
+        {
+            if (token == "if") return TokenType.KEYWORD_IF;
+            if (token == "else") return TokenType.KEYWORD_ELSE;
+            if (token == "then") return TokenType.KEYWORD_THEN;
+            if (Regex.IsMatch(token, @"^[a-zA-Z_][a-zA-Z0-9_]*$")) return TokenType.IDENTIFIER;
+            if (Regex.IsMatch(token, @"^0[xX][0-9a-fA-F]+$")) return TokenType.HEX_NUMBER;
+            if (Regex.IsMatch(token, @"^\d+(\.\d+)?$")) return TokenType.DECIMAL_NUMBER;
+            if (token == ":=") return TokenType.ASSIGNMENT;
+            if (Regex.IsMatch(token, @"[<>]=?|==|!=|=")) return TokenType.COMPARISON;
+            if (token == ";") return TokenType.SEMICOLON;
+            if (token == "(") return TokenType.LEFT_PARENTHESIS;
+            if (token == ")") return TokenType.RIGHT_PARENTHESIS;
+            if (token == "+") return TokenType.PLUS;
+            if (token == "-") return TokenType.MINUS;
+            if (token == "*") return TokenType.MULTIPLY;
+            return TokenType.UNKNOWN;
+        }
+
+        private List<Token> Tokenize(string code)
+        {
+            var tokens = new List<Token>();
+            int lineNumber = 1;
+            string[] lines = code.Split(new[] { '\n' }, StringSplitOptions.None);
+
+            foreach (var line in lines)
+            {
+                var regex = new Regex(@"(\s*if\s*|\s*else\s*|\s*then\s*|\s*:=\s*|[<>]=?|==|!=|;|\s*0[xX][0-9a-fA-F]+\s*|^\d+(\.\d+)?\s*|[a-zA-Z_][a-zA-Z0-9_]*\s*|\$|\$|\S+)");
+                var matches = regex.Matches(line);
+
+                foreach (Match match in matches)
+                {
+                    var tokenValue = match.Value.Trim();
+                    if (!string.IsNullOrEmpty(tokenValue))
+                    {
+                        var type = IdentifyTokenType(tokenValue);
+                        tokens.Add(new Token(tokenValue, type, lineNumber));
+                    }
+                }
+                lineNumber++;
+            }
+            return tokens;
+        }
+
+        private void btnLoadFile_Click(object sender, EventArgs e)
+        {
+            using (OpenFileDialog openFileDialog = new OpenFileDialog())
+            {
+                openFileDialog.Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*";
+                openFileDialog.Title = "Выберите текстовый файл";
+                if (openFileDialog.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        string code = File.ReadAllText(openFileDialog.FileName);
+                        txtCode.Text = code;
+                        List<Token> tokens = Tokenize(code);
+                        listBoxTokens.Items.Clear();
+                        listBoxSyntaxErrors.Items.Clear();
+
+                        listBoxTokens.Items.Add("Строка\tЛексема\tТип");
+
+                        foreach (var token in tokens)
+                        {
+                            listBoxTokens.Items.Add($"{token.LineNumber}\t{token.Value}\t{token.Type}");
+                        }
+
+                        var syntaxTree = new Parser(tokens, listBoxSyntaxErrors).Parse();
+                        DisplaySyntaxTree(syntaxTree, "");
+
+                        // Генерация и отображение триад
+                        List<string> initialTriads = GenerateInitialTriads(tokens);
+                        listBox1.Items.Clear();
+                        foreach (var triad in initialTriads)
+                        {
+                            listBox1.Items.Add(triad);
+                        }
+
+                        // Генерация триад для оптимизации
+                        List<string> triadsForOptimization = GenerateTriadsForOptimization(tokens);
+                        listBox2.Items.Clear();
+                        foreach (var triad in triadsForOptimization)
+                        {
+                            listBox2.Items.Add(triad);
+                        }
+
+                        // Оптимизация триад
+                        OptimizeTriads();
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Ошибка при загрузке файла: {ex.Message}", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            }
+        }
+
+        private void DisplaySyntaxTree(SyntaxTreeNode node, string indent)
+        {
+            if (node.Value != "StatementList")
+            {
+                listBoxSyntaxErrors.Items.Add(indent + node.Value);
+            }
+            foreach (var child in node.Children)
+            {
+                DisplaySyntaxTree(child, indent + "  ");
+            }
+        }
+
+        private List<string> GenerateInitialTriads(List<Token> tokens)
+        {
+            var triads = new List<string>();
+            int tempCounter = 1;
+            int triadCounter = 1; // Добавляем счетчик для триад
+
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                if (tokens[i].Type == TokenType.ASSIGNMENT)
+                {
+                    string leftOperand = tokens[i - 1].Value;
+                    string rightOperand = GetExpressionValue(tokens, ref i, ref tempCounter, triads, ref triadCounter);
+                    triads.Add($":= ({leftOperand}, {rightOperand})");
+                    triadCounter++; // Увеличиваем счетчик триад
+                }
+                else if (tokens[i].Type == TokenType.KEYWORD_IF)
+                {
+                    // Обработка вложенных условий
+                    i = HandleIfStatement(tokens, i, triads, ref tempCounter, ref triadCounter);
+                }
+            }
+
+            return triads;
+        }
+
+        private int HandleIfStatement(List<Token> tokens, int currentIndex, List<string> triads, ref int tempCounter, ref int triadCounter)
+        {
+            // Пропускаем "if"
+            currentIndex++;
+
+            // Обрабатываем условие
+            while (currentIndex < tokens.Count && tokens[currentIndex].Type != TokenType.KEYWORD_THEN)
+            {
+                currentIndex++;
+            }
+
+            // Пропускаем "then"
+            if (currentIndex < tokens.Count && tokens[currentIndex].Type == TokenType.KEYWORD_THEN)
+            {
+                currentIndex++;
+            }
+
+            // Обрабатываем блок "then"
+            while (currentIndex < tokens.Count && tokens[currentIndex].Type != TokenType.KEYWORD_ELSE && tokens[currentIndex].Type != TokenType.SEMICOLON)
+            {
+                if (tokens[currentIndex].Type == TokenType.ASSIGNMENT)
+                {
+                    string leftOperand = tokens[currentIndex - 1].Value;
+                    string rightOperand = GetExpressionValue(tokens, ref currentIndex, ref tempCounter, triads, ref triadCounter);
+                    triads.Add($":= ({leftOperand}, {rightOperand})");
+                    triadCounter++; // Увеличиваем счетчик триад
+                }
+                else if (tokens[currentIndex].Type == TokenType.KEYWORD_IF)
+                {
+                    currentIndex = HandleIfStatement(tokens, currentIndex, triads, ref tempCounter, ref triadCounter);
+                }
+                currentIndex++;
+            }
+
+            // Обрабатываем блок "else"
+            if (currentIndex < tokens.Count && tokens[currentIndex].Type == TokenType.KEYWORD_ELSE)
+            {
+                currentIndex++;
+                while (currentIndex < tokens.Count && tokens[currentIndex].Type != TokenType.SEMICOLON)
+                {
+                    if (tokens[currentIndex].Type == TokenType.ASSIGNMENT)
+                    {
+                        string leftOperand = tokens[currentIndex - 1].Value;
+                        string rightOperand = GetExpressionValue(tokens, ref currentIndex, ref tempCounter, triads, ref triadCounter);
+                        triads.Add($":= ({leftOperand}, {rightOperand})");
+                        triadCounter++; // Увеличиваем счетчик триад
+                    }
+                    else if (tokens[currentIndex].Type == TokenType.KEYWORD_IF)
+                    {
+                        currentIndex = HandleIfStatement(tokens, currentIndex, triads, ref tempCounter, ref triadCounter);
+                    }
+                    currentIndex++;
+                }
+            }
+
+            return currentIndex;
+        }
+
+        private string GetExpressionValue(List<Token> tokens, ref int currentTokenIndex, ref int tempCounter, List<string> triads, ref int triadCounter)
+        {
+            var output = new Stack<string>();
+            var operators = new Stack<string>();
+            var expression = new List<string>();
+
+            while (currentTokenIndex < tokens.Count && tokens[currentTokenIndex].Type != TokenType.SEMICOLON)
+            {
+                var token = tokens[currentTokenIndex];
+                if (token.Type == TokenType.IDENTIFIER || token.Type == TokenType.HEX_NUMBER || token.Type == TokenType.DECIMAL_NUMBER)
+                {
+                    output.Push(token.Value);
+                    expression.Add(token.Value);
+                }
+                else if (token.Type == TokenType.PLUS || token.Type == TokenType.MINUS || token.Type == TokenType.MULTIPLY)
+                {
+                    operators.Push(token.Value);
+                    expression.Add(token.Value);
+                }
+                currentTokenIndex++;
+            }
+
+            while (operators.Count > 0)
+            {
+                var op = operators.Pop();
+
+                if (output.Count < 2)
+                {
+                    throw new InvalidOperationException("Not enough operands for operator");
+                }
+
+                var right = output.Pop();
+                var left = output.Pop();
+                var tempVar = $"^{triadCounter}"; // Используем номер триады
+                triads.Add($"{op} ({left}, {right})");
+                output.Push(tempVar);
+                triadCounter++; // Увеличиваем счетчик триад
+            }
+
+            if (output.Count == 0)
+            {
+                throw new InvalidOperationException("No operands found");
+            }
+
+            return output.Pop();
+        }
+
+        private List<string> GenerateTriadsForOptimization(List<Token> tokens)
+        {
+            var triads = new List<string>();
+            int tempCounter = 1;
+            var expressionCache = new Dictionary<string, string>(); // Кэш для выражений
+
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                if (tokens[i].Type == TokenType.ASSIGNMENT)
+                {
+                    string leftOperand = tokens[i - 1].Value;
+                    string rightOperand = GetExpressionValue(tokens, ref i, triads, ref tempCounter, expressionCache);
+                    triads.Add($":= ({leftOperand}, {rightOperand})");
+                    tempCounter++;
+                }
+                else if (tokens[i].Type == TokenType.KEYWORD_IF)
+                {
+                    // Обработка вложенных условий
+                    i = HandleIfStatement(tokens, i, triads, ref tempCounter, expressionCache);
+                }
+            }
+
+            return triads;
+        }
+
+        private int HandleIfStatement(List<Token> tokens, int currentIndex, List<string> triads, ref int tempCounter, Dictionary<string, string> expressionCache)
+        {
+            // Пропускаем "if"
+            currentIndex++;
+
+            // Обрабатываем условие
+            while (currentIndex < tokens.Count && tokens[currentIndex].Type != TokenType.KEYWORD_THEN)
+            {
+                currentIndex++;
+            }
+
+            // Пропускаем "then"
+            if (currentIndex < tokens.Count && tokens[currentIndex].Type == TokenType.KEYWORD_THEN)
+            {
+                currentIndex++;
+            }
+
+            // Обрабатываем блок "then"
+            while (currentIndex < tokens.Count && tokens[currentIndex].Type != TokenType.KEYWORD_ELSE && tokens[currentIndex].Type != TokenType.SEMICOLON)
+            {
+                if (tokens[currentIndex].Type == TokenType.ASSIGNMENT)
+                {
+                    string leftOperand = tokens[currentIndex - 1].Value;
+                    string rightOperand = GetExpressionValue(tokens, ref currentIndex, triads, ref tempCounter, expressionCache);
+                    triads.Add($":= ({leftOperand}, {rightOperand})");
+                    tempCounter++;
+                }
+                else if (tokens[currentIndex].Type == TokenType.KEYWORD_IF)
+                {
+                    currentIndex = HandleIfStatement(tokens, currentIndex, triads, ref tempCounter, expressionCache);
+                }
+                currentIndex++;
+            }
+
+            // Обрабатываем блок "else"
+            if (currentIndex < tokens.Count && tokens[currentIndex].Type == TokenType.KEYWORD_ELSE)
+            {
+                currentIndex++;
+                while (currentIndex < tokens.Count && tokens[currentIndex].Type != TokenType.SEMICOLON)
+                {
+                    if (tokens[currentIndex].Type == TokenType.ASSIGNMENT)
+                    {
+                        string leftOperand = tokens[currentIndex - 1].Value;
+                        string rightOperand = GetExpressionValue(tokens, ref currentIndex, triads, ref tempCounter, expressionCache);
+                        triads.Add($":= ({leftOperand}, {rightOperand})");
+                        tempCounter++;
+                    }
+                    else if (tokens[currentIndex].Type == TokenType.KEYWORD_IF)
+                    {
+                        currentIndex = HandleIfStatement(tokens, currentIndex, triads, ref tempCounter, expressionCache);
+                    }
+                    currentIndex++;
+                }
+            }
+
+            return currentIndex;
+        }
+
+        private string GetExpressionValue(List<Token> tokens, ref int currentTokenIndex, List<string> triads, ref int tempCounter, Dictionary<string, string> expressionCache)
+        {
+            var output = new Stack<string>();
+            var operators = new Stack<string>();
+            var expression = new List<string>();
+
+            while (currentTokenIndex < tokens.Count && tokens[currentTokenIndex].Type != TokenType.SEMICOLON)
+            {
+                var token = tokens[currentTokenIndex];
+                if (token.Type == TokenType.IDENTIFIER || token.Type == TokenType.HEX_NUMBER || token.Type == TokenType.DECIMAL_NUMBER)
+                {
+                    output.Push(token.Value);
+                    expression.Add(token.Value);
+                }
+                else if (token.Type == TokenType.PLUS || token.Type == TokenType.MINUS || token.Type == TokenType.MULTIPLY)
+                {
+                    operators.Push(token.Value);
+                    expression.Add(token.Value);
+                }
+                currentTokenIndex++;
+            }
+
+            var expressionKey = string.Join(" ", expression);
+            if (expressionCache.ContainsKey(expressionKey))
+            {
+                return expressionCache[expressionKey];
+            }
+
+            while (operators.Count > 0)
+            {
+                var op = operators.Pop();
+
+                if (output.Count < 2)
+                {
+                    throw new InvalidOperationException("Not enough operands for operator");
+                }
+
+                var right = output.Pop();
+                var left = output.Pop();
+                var triad = $"{op} ({left}, {right})";
+                var tempVar = $"^{tempCounter}";
+                output.Push(tempVar);
+                tempCounter++;
+                triads.Add(triad);
+                expressionCache[expressionKey] = tempVar;
+            }
+
+            if (output.Count == 0)
+            {
+                throw new InvalidOperationException("No operands found");
+            }
+
+            return output.Pop();
+        }
+
+        private void OptimizeTriads()
+        {
+            var originalTriads = new List<string>();
+
+            // Считываем триады из listBox2
+            foreach (var item in listBox2.Items)
+            {
+                originalTriads.Add(item.ToString());
+            }
+
+            var optimizedTriads = new List<string>();
+            var variableAssignments = new Dictionary<string, string>(); // Для хранения переменных и их значений
+
+            foreach (var triad in originalTriads)
+            {
+                var parts = triad.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 3 && parts[0] == ":=")
+                {
+                    var leftOperand = parts[1];
+                    var rightOperand = parts[2];
+
+                    // Если переменная уже имеет это значение, пропускаем триаду
+                    if (variableAssignments.ContainsKey(leftOperand) && variableAssignments[leftOperand] == rightOperand)
+                    {
+                        continue;
+                    }
+
+                    // Обновляем значение переменной
+                    variableAssignments[leftOperand] = rightOperand;
+                    optimizedTriads.Add(triad);
+                }
+                else
+                {
+                    optimizedTriads.Add(triad); // Добавляем все остальные триады
+                }
+            }
+
+            // Очищаем listBox2 и добавляем оптимизированные триады
+            listBox2.Items.Clear();
+            foreach (var optimizedTriad in optimizedTriads)
+            {
+                listBox2.Items.Add(optimizedTriad);
+            }
+        }
+
+        public class SyntaxTreeNode
+        {
+            public string Value { get; set; }
+            public List<SyntaxTreeNode> Children { get; set; }
+
+            public SyntaxTreeNode(string value)
+            {
+                Value = value;
+                Children = new List<SyntaxTreeNode>();
+            }
+        }
+
+        public class Parser
+        {
+            private List<Token> tokens;
+            private int currentTokenIndex;
+            private ListBox listBoxSyntaxErrors;
+
+            public Parser(List<Token> tokens, ListBox listBoxSyntaxErrors)
+            {
+                this.tokens = tokens;
+                this.listBoxSyntaxErrors = listBoxSyntaxErrors;
+                currentTokenIndex = 0;
+            }
+
+            public SyntaxTreeNode Parse()
+            {
+                var root = new SyntaxTreeNode("Program");
+                ParseStatementList(root);
+                return root;
+            }
+
+            private void ParseStatementList(SyntaxTreeNode parent)
+            {
+                while (currentTokenIndex < tokens.Count)
+                {
+                    var statementNode = new SyntaxTreeNode("StatementList");
+                    parent.Children.Add(statementNode);
+
+                    if (currentTokenIndex < tokens.Count)
+                    {
+                        ParseStatement(statementNode);
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+            }
+
+            private void ParseStatement(SyntaxTreeNode parent)
+            {
+                if (currentTokenIndex >= tokens.Count) return;
+
+                var token = tokens[currentTokenIndex];
+                if (token.Type == TokenType.KEYWORD_IF)
+                {
+                    ParseIfStatement(parent);
+                }
+                else
+                {
+                    ParseAssignment(parent);
+                }
+            }
+
+            private void ParseIfStatement(SyntaxTreeNode parent)
+            {
+                var ifNode = new SyntaxTreeNode("IfStatement");
+                parent.Children.Add(ifNode);
+
+                if (currentTokenIndex < tokens.Count && tokens[currentTokenIndex].Type == TokenType.KEYWORD_IF)
+                {
+                    ifNode.Children.Add(new SyntaxTreeNode(tokens[currentTokenIndex++].Value));
+
+                    var expressionNode = new SyntaxTreeNode("Expression");
+                    ifNode.Children.Add(expressionNode);
+                    ParseExpression(expressionNode);
+
+                    if (currentTokenIndex < tokens.Count && tokens[currentTokenIndex].Type == TokenType.KEYWORD_THEN)
+                    {
+                        ifNode.Children.Add(new SyntaxTreeNode(tokens[currentTokenIndex++].Value));
+                    }
+
+                    var thenStatementListNode = new SyntaxTreeNode("StatementList");
+                    ifNode.Children.Add(thenStatementListNode);
+                    ParseStatementList(thenStatementListNode);
+
+                    if (currentTokenIndex < tokens.Count && tokens[currentTokenIndex].Type == TokenType.KEYWORD_ELSE)
+                    {
+                        ifNode.Children.Add(new SyntaxTreeNode(tokens[currentTokenIndex++].Value));
+
+                        var elseStatementListNode = new SyntaxTreeNode("StatementList");
+                        ifNode.Children.Add(elseStatementListNode);
+                        ParseStatementList(elseStatementListNode);
+                    }
+                }
+            }
+
+            private void ParseAssignment(SyntaxTreeNode parent)
+            {
+                var assignmentNode = new SyntaxTreeNode("Assignment");
+                parent.Children.Add(assignmentNode);
+
+                if (currentTokenIndex < tokens.Count)
+                {
+                    assignmentNode.Children.Add(new SyntaxTreeNode(tokens[currentTokenIndex++].Value));
+                }
+
+                if (currentTokenIndex < tokens.Count && tokens[currentTokenIndex].Type == TokenType.ASSIGNMENT)
+                {
+                    assignmentNode.Children.Add(new SyntaxTreeNode(tokens[currentTokenIndex++].Value));
+                }
+
+                var expressionNode = new SyntaxTreeNode("Expression");
+                assignmentNode.Children.Add(expressionNode);
+
+                ParseExpression(expressionNode);
+
+                if (currentTokenIndex < tokens.Count && tokens[currentTokenIndex].Type == TokenType.SEMICOLON)
+                {
+                    assignmentNode.Children.Add(new SyntaxTreeNode(tokens[currentTokenIndex++].Value));
+                }
+            }
+
+            private void ParseExpression(SyntaxTreeNode parent)
+            {
+                if (currentTokenIndex >= tokens.Count) return;
+
+                var token = tokens[currentTokenIndex];
+
+                if (token.Type == TokenType.IDENTIFIER || token.Type == TokenType.HEX_NUMBER || token.Type == TokenType.DECIMAL_NUMBER)
+                {
+                    parent.Children.Add(new SyntaxTreeNode(tokens[currentTokenIndex++].Value));
+
+                    if (currentTokenIndex < tokens.Count && (tokens[currentTokenIndex].Type == TokenType.PLUS || tokens[currentTokenIndex].Type == TokenType.MINUS || tokens[currentTokenIndex].Type == TokenType.MULTIPLY))
+                    {
+                        parent.Children.Add(new SyntaxTreeNode(tokens[currentTokenIndex++].Value));
+                        ParseExpression(parent);
+                    }
+                }
+            }
+        }
+    }
+}
